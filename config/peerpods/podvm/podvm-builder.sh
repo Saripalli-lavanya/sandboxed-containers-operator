@@ -21,8 +21,7 @@ function install_aws_deps() {
 function install_libvirt_deps() {
   echo "Installing libvirt deps"
   # Install the required packages
-  # Install the required packages
-  if [ "$1" == "pre-config" ]; then
+  if [[ "$1" == "pre-config" ]] || [[ "$1" == "pre-config-cleanup" ]]; then
     /scripts/libvirt-podvm-image-handler.sh -- install_pre_config
   else
     /scripts/libvirt-podvm-image-handler.sh -- install_binaries
@@ -69,6 +68,28 @@ function pre_config() {
     exit 1
     ;;
   esac
+}
+
+function pre_config_clean() {
+  # Destoryed Libvirt pool, volume and neccesary pre-requisites for podvm image creation job.
+  case "${CLOUD_PROVIDER}" in
+  libvirt)
+    /scripts/libvirt-pre-config.sh clean
+    ;;
+  *)
+    echo "CLOUD_PROVIDER is not set to libvirt"
+    exit 1
+    ;;
+  esac
+}
+
+# Function to check if peer-pods-cm configmap exists
+function check_peer_pods_cm_exists() {
+  if kubectl get configmap peer-pods-cm -n openshift-sandboxed-containers-operator >/dev/null 2>&1; then
+    return 0
+  else
+    return 1
+  fi
 }
 
 # Function to create podvm image
@@ -352,8 +373,10 @@ delete-gallery)
   delete_podvm_image_gallery "$2"
   ;;
 pre-config)
-  echo "Savitri Calling pre_config_environment "
   pre_config_environment
+  ;;
+pre-config-cleanup)
+  pre_config_clean
   ;;
 *)
   display_usage

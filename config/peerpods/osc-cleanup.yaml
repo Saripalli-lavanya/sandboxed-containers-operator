@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: osc-podvm-pre-configuration-clean
+  namespace: openshift-sandboxed-containers-operator
+spec:
+  parallelism: 1
+  completions: 1
+  backoffLimit: 1
+  template:
+    metadata:
+      name: osc-podvm-pre-configuration-clean
+    spec:
+      containers:
+        - name: clean
+          image: quay.io/savitrilh/openshift-sandboxed-containers/osc-podvm-builder-rhel9:7
+          imagePullPolicy: Always
+          securityContext:
+            runAsUser: 0 # needed for container mode dnf access
+          envFrom:
+            - secretRef:
+                name: ocp-libvirt-secret 
+            - secretRef:
+                name: peer-pods-secret
+            - configMapRef:
+                name: libvirt-podvm-image-cm
+                optional: true
+          command: ["/podvm-builder.sh", "pre-config-cleanup"]
+      restartPolicy: Never

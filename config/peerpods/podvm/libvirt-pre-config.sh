@@ -30,26 +30,28 @@ if [ -z "$KVM_HOST_ADDRESS" ] || [ -z "$KVM_HOST_USERNAME" ] || [ -z "$KVM_HOST_
     exit 1
 fi
 
-if [ -z "$USER_LIBVIRT_POOL" ]; then
-    USER_LIBVIRT_POOL=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_POOL}" | base64 --decode)
-    if [ -z "$USER_LIBVIRT_POOL" ]; then
-        USER_LIBVIRT_POOL="pool-auto-$(date +"%Y%m%d%H%M%S")"
+if [ -z "$LIBVIRT_POOL" ]; then
+    LIBVIRT_POOL=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_POOL}" | base64 --decode)
+    if [ -z "$LIBVIRT_POOL" ]; then
+        LIBVIRT_POOL="pool-auto-$(date +"%Y%m%d%H%M%S")"
     fi
 fi
 
-if [ -z "$USER_LIBVIRT_VOL_NAME" ]; then
-    USER_LIBVIRT_VOL_NAME=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOLUME}" | base64 --decode)
-    if [ -z "$USER_LIBVIRT_VOL_NAME" ]; then
-        USER_LIBVIRT_VOL_NAME="vol-auto-$(date +"%Y%m%d%H%M%S")"
+if [ -z "$LIBVIRT_VOL_NAME" ]; then
+    LIBVIRT_VOL_NAME=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOLUME}" | base64 --decode)
+    if [ -z "$LIBVIRT_VOL_NAME" ]; then
+        LIBVIRT_VOL_NAME="vol-auto-$(date +"%Y%m%d%H%M%S")"
     fi
 fi
 
-if [ -z "$USER_LIBVIRT_POOL_FOLDER" ]; then
-    USER_LIBVIRT_POOL_FOLDER=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOL_DIRECTORY}" | base64 --decode)
-    USER_LIBVIRT_POOL_DIRECTORY="/var/lib/libvirt/images/$USER_LIBVIRT_POOL_FOLDER"
-    if [ -z "$USER_LIBVIRT_POOL_FOLDER" ]; then
-        USER_LIBVIRT_POOL_DIRECTORY="/var/lib/libvirt/images/dir-auto-$(date +"%Y%m%d%H%M%S")"
+if [ -z "$LIBVIRT_POOL_FOLDER" ]; then
+    LIBVIRT_POOL_FOLDER=$(oc get secret ocp-libvirt-secret -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOL_DIRECTORY}" | base64 --decode)
+    LIBVIRT_POOL_DIRECTORY="/var/lib/libvirt/images/$LIBVIRT_POOL_FOLDER"
+    if [ -z "$LIBVIRT_POOL_FOLDER" ]; then
+        LIBVIRT_POOL_DIRECTORY="/var/lib/libvirt/images/dir-auto-$(date +"%Y%m%d%H%M%S")"
     fi
+else 
+    LIBVIRT_POOL_DIRECTORY="/var/lib/libvirt/images/$LIBVIRT_POOL_FOLDER"
 fi
 
 
@@ -61,16 +63,45 @@ metadata:
   namespace: "$NAMESPACE"
 type: Opaque
 stringData:
-  CLOUD_PROVIDER: "libvirt"
-  LIBVIRT_URI: "qemu+ssh://root@192.168.122.1/system?no_verify=1"
-  LIBVIRT_POOL: "$USER_LIBVIRT_POOL"
-  LIBVIRT_VOL_NAME: "$USER_LIBVIRT_VOL_NAME"
+  CLOUD_PROVIDER: "$CLOUD_PROVIDER"
+  LIBVIRT_URI: "$LIBVIRT_URI"
+  LIBVIRT_POOL: "$LIBVIRT_POOL"
+  LIBVIRT_VOL_NAME: "$LIBVIRT_VOL_NAME"
   REDHAT_OFFLINE_TOKEN: "$REDHAT_OFFLINE_TOKEN"
   HOST_KEY_CERTS: |
     $HOST_KEY_CERTS
 EOF
 )
+LIBVIRT_PODVM_IMAGE_CM=$(cat <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: libvirt-podvm-image-cm
+  namespace: $NAMESPACE
+data:
+  # PodVM image distro
+  PODVM_DISTRO: "$PODVM_DISTRO"
 
+  # Pod VM sources
+  # If changing the source, then ensure the respective payload binaries are available
+  # for the new source
+  CAA_SRC: "$CAA_SRC"
+  CAA_REF: "$CAA_REF"
+
+  # Booleans
+  DOWNLOAD_SOURCES: "$DOWNLOAD_SOURCES"
+  CONFIDENTIAL_COMPUTE_ENABLED: "$CONFIDENTIAL_COMPUTE_ENABLED"
+  UPDATE_PEERPODS_CM: "$UPDATE_PEERPODS_CM"
+
+  # Libvirt specific
+  ORG_ID: "$ORG_ID"
+  ACTIVATION_KEY: "$ACTIVATION_KEY"
+  BASE_OS_VERSION: "$BASE_OS_VERSION"
+
+  # To Enable SE for IBM Z
+  SE_BOOT: "$SE_BOOT"
+EOF
+)
 CONFIGMAP_YAML=$(cat <<EOF
 apiVersion: v1
 kind: ConfigMap
@@ -78,7 +109,7 @@ metadata:
   name: peer-pods-cm
   namespace: openshift-sandboxed-containers-operator
 data:
-  CLOUD_PROVIDER: "libvirt"
+  CLOUD_PROVIDER: "$CLOUD_PROVIDER"
   PROXY_TIMEOUT: "15m"
 EOF
 )
@@ -149,77 +180,80 @@ EOF
 create_configMap_and_secret() {
     echo "$SECRET_YAML" | oc apply -f -
     echo "$CONFIGMAP_YAML" | oc apply -f -
+    echo "$LIBVIRT_PODVM_IMAGE_CM" | oc apply -f -
 }
 
 cleanup() {
     echo "Cleaning up..."
 
     # Extract current values from the secret
-    USER_LIBVIRT_POOL=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_POOL}" | base64 --decode)
-    USER_LIBVIRT_VOL_NAME=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOL_NAME}" | base64 --decode)
+    LIBVIRT_POOL=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_POOL}" | base64 --decode)
+    LIBVIRT_VOL_NAME=$(oc get secret "$SECRET_NAME" -n "$NAMESPACE" -o jsonpath="{.data.LIBVIRT_VOL_NAME}" | base64 --decode)
     
-    if [ -z "$USER_LIBVIRT_POOL" ] || [ -z "$USER_LIBVIRT_VOL_NAME" ]; then
+    if [ -z "$LIBVIRT_POOL" ] || [ -z "$LIBVIRT_VOL_NAME" ]; then
         echo "Error: Missing pool or volume name in the secret."
         exit 1
     fi
 
     # Check if the pool exists
-    if ! ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-info "$USER_LIBVIRT_POOL" >/dev/null 2>&1; then
-        echo "Pool '$USER_LIBVIRT_POOL' does not exist on KVM host."
+    if ! ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-info "$LIBVIRT_POOL" >/dev/null 2>&1; then
+        echo "Pool '$LIBVIRT_POOL' does not exist on KVM host."
         exit 1
     fi
 
     # List volumes in the pool
-    VOLUMES=$(ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-list "$USER_LIBVIRT_POOL" | awk 'NR>2 {print $1}')
-    if [ "$VOLUMES" == "$USER_LIBVIRT_VOL_NAME" ]; then
-        echo "Volume '$USER_LIBVIRT_VOL_NAME' is the only volume in the pool. Deleting the volume."
+    VOLUMES=$(ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-list "$LIBVIRT_POOL" | awk 'NR>2 {print $1}')
+    if [ "$VOLUMES" == "$LIBVIRT_VOL_NAME" ]; then
+        echo "Volume '$LIBVIRT_VOL_NAME' is the only volume in the pool. Deleting the volume."
 
-        if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-delete "$USER_LIBVIRT_VOL_NAME" --pool "$USER_LIBVIRT_POOL"; then
-            echo "Volume '$USER_LIBVIRT_VOL_NAME' deleted successfully."
+        if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-delete "$LIBVIRT_VOL_NAME" --pool "$LIBVIRT_POOL"; then
+            echo "Volume '$LIBVIRT_VOL_NAME' deleted successfully."
 
             # Check if the pool is now empty
-            VOLUMES=$(ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-list "$USER_LIBVIRT_POOL" | awk 'NR>2 {print $1}')
+            VOLUMES=$(ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh vol-list "$LIBVIRT_POOL" | awk 'NR>2 {print $1}')
             if [ -z "$VOLUMES" ]; then
                 echo "No volumes found in the pool. Proceeding to delete the pool & libvirt directory"
-                if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-destroy "$USER_LIBVIRT_POOL"; then
-                    echo "Pool '$USER_LIBVIRT_POOL' destroyed successfully."
-                    if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-undefine "$USER_LIBVIRT_POOL"; then
-                        echo "Pool '$USER_LIBVIRT_POOL' undefined successfully."
+                if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-destroy "$LIBVIRT_POOL"; then
+                    echo "Pool '$LIBVIRT_POOL' destroyed successfully."
+                    if ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-undefine "$LIBVIRT_POOL"; then
+                        echo "Pool '$LIBVIRT_POOL' undefined successfully."
                     else
-                        echo "Failed to undefine the pool '$USER_LIBVIRT_POOL'."
+                        echo "Failed to undefine the pool '$LIBVIRT_POOL'."
                         exit 1
                     fi
                 else
-                    echo "Failed to destroy the pool '$USER_LIBVIRT_POOL'."
+                    echo "Failed to destroy the pool '$LIBVIRT_POOL'."
                     exit 1
                 fi
-                sudo rm -rf "$USER_LIBVIRT_POOL_DIRECTORY" 2>/dev/null || echo "Directory '${USER_LIBVIRT_POOL_DIRECTORY}' could not be removed."
+                sudo rm -rf "$LIBVIRT_POOL_DIRECTORY" 2>/dev/null || echo "Directory '${LIBVIRT_POOL_DIRECTORY}' could not be removed."
 
             else
-                echo "Error: Volume '$USER_LIBVIRT_VOL_NAME' was deleted, but other volumes remain in the pool."
+                echo "Error: Volume '$LIBVIRT_VOL_NAME' was deleted, but other volumes remain in the pool."
             fi
         else
-            echo "Failed to delete the volume '$USER_LIBVIRT_VOL_NAME'."
+            echo "Failed to delete the volume '$LIBVIRT_VOL_NAME'."
             exit 1
         fi
     else
-        echo "Volume '$USER_LIBVIRT_VOL_NAME' is not the only volume in the pool. Not deleting the volume or pool."
+        echo "Volume '$LIBVIRT_VOL_NAME' is not the only volume in the pool. Not deleting the volume or pool."
         echo "Volumes in the pool:"
         echo "$VOLUMES"
     fi
 
     # Delete Kubernetes secrets and configmaps
-    oc delete secret ssh-key-secret -n openshift-sandboxed-containers-operator
-    oc delete configmap peer-pods-cm -n openshift-sandboxed-containers-operator
+    oc delete secret ssh-key-secret -n "$NAMESPACE"
+    oc delete configmap peer-pods-cm -n "$NAMESPACE"
     oc delete secret "$SECRET_NAME" -n "$NAMESPACE"
+    oc delete configmap "libvirt-podvm-image-cm" -n "$NAMESPACE"
+
     echo "Cleanup completed."
 }
 
 if [ "$ACTION" == "create" ]; then
     install_sshpass
     generate_ssh_keys
-    check_pool_and_volume_existence "${KVM_HOST_ADDRESS}" "${USER_LIBVIRT_POOL}" "${USER_LIBVIRT_VOL_NAME}"
-    create_pool_volume_on_kvm_and_sync_sshid "${KVM_HOST_USERNAME}" "${KVM_HOST_ADDRESS}" "${USER_LIBVIRT_POOL}" "${USER_LIBVIRT_VOL_NAME}" "${USER_LIBVIRT_POOL_DIRECTORY}"
+    check_pool_and_volume_existence "${KVM_HOST_ADDRESS}" "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}"
+    create_pool_volume_on_kvm_and_sync_sshid "${KVM_HOST_USERNAME}" "${KVM_HOST_ADDRESS}" "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}" "${LIBVIRT_POOL_DIRECTORY}"
     create_configMap_and_secret
 elif [ "$ACTION" == "clean" ]; then
     install_sshpass

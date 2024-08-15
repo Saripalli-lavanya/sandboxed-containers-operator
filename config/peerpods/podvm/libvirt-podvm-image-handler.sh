@@ -11,7 +11,7 @@
 # include common functions from lib.sh
 # shellcheck source=/dev/null
 # The directory is where libvirt-podvm-image-handler.sh is located
-source /scripts/lib.sh  
+source /scripts/lib.sh
 
 # Function to verify that the required variables are set
 

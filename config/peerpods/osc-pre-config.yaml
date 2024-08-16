@@ -13,15 +13,12 @@ spec:
     spec:
       containers:
         - name: create
-          image: quay.io/savitrilh/openshift-sandboxed-containers/osc-podvm-builder-rhel9:7
+          image: quay.io/savitrilh/openshift-sandboxed-containers/osc-podvm-builder-rhel9:latest-pr
           imagePullPolicy: Always
           securityContext:
             runAsUser: 0 # needed for container mode dnf access
           envFrom:
             - secretRef:
                 name: ocp-libvirt-secret 
-            - configMapRef:
-                name: libvirt-podvm-image-cm
-                optional: true
           command: ["/podvm-builder.sh", "pre-config"]
       restartPolicy: Never

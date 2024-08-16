@@ -192,13 +192,13 @@ cleanup() {
     
     if [ -z "$LIBVIRT_POOL" ] || [ -z "$LIBVIRT_VOL_NAME" ]; then
         echo "Error: Missing pool or volume name in the secret."
-        exit 1
+        #exit 1
     fi
 
     # Check if the pool exists
     if ! ssh -i /root/.ssh/id_rsa -o StrictHostKeyChecking=no "${KVM_HOST_USERNAME}@${KVM_HOST_ADDRESS}" sudo virsh pool-info "$LIBVIRT_POOL" >/dev/null 2>&1; then
         echo "Pool '$LIBVIRT_POOL' does not exist on KVM host."
-        exit 1
+        #exit 1
     fi
 
     # List volumes in the pool
@@ -219,11 +219,11 @@ cleanup() {
                         echo "Pool '$LIBVIRT_POOL' undefined successfully."
                     else
                         echo "Failed to undefine the pool '$LIBVIRT_POOL'."
-                        exit 1
+                        #exit 1
                     fi
                 else
                     echo "Failed to destroy the pool '$LIBVIRT_POOL'."
-                    exit 1
+                    #exit 1
                 fi
                 sudo rm -rf "$LIBVIRT_POOL_DIRECTORY" 2>/dev/null || echo "Directory '${LIBVIRT_POOL_DIRECTORY}' could not be removed."
 
@@ -232,7 +232,7 @@ cleanup() {
             fi
         else
             echo "Failed to delete the volume '$LIBVIRT_VOL_NAME'."
-            exit 1
+            #exit 1
         fi
     else
         echo "Volume '$LIBVIRT_VOL_NAME' is not the only volume in the pool. Not deleting the volume or pool."

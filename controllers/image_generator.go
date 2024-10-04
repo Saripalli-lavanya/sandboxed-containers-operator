@@ -59,6 +59,8 @@ const (
 	LibvirtProvider               = "libvirt"
 	peerpodsImageJobsPathLocation = "/config/peerpods/podvm"
 	azureImageGalleryPrefix       = "PodVMGallery"
+	preConfigJobName              = "osc-podvm-pre-configuration"
+	postUnconfigJobName           = "osc-podvm-pre-configuration-clean"
 )
 
 // Return values for ImageCreate and ImageDelete
@@ -79,6 +81,24 @@ const (
 	ImageDeletionStatusUnknown = -2
 )
 
+// Return values for PreConfig and PostUnconfig
+const (
+	PreConfiguredSuccessfully = iota
+	PostUnconfiguredSuccessfully
+	ConfigRequeueNeeded
+	ConfigJobRunning
+	ConfigJobCompleted
+	ConfigJobFailed
+	PreConfigInProgress
+	PostUnconfigInProgress
+	UnsupportedProvider
+	PreConfigurationFailed           = -1
+	PostUnconfigurationFailed        = -1
+	CheckingConfigJobStatusFailed    = -1
+	PreConfigurationStatusUnknown    = -2
+	PostUnconfigurationStatusUnknown = -2
+)
+
 // Custom error types
 var (
 	ErrInitializingImageGenerator = errors.New("error initializing ImageGenerator instance")
@@ -89,6 +109,8 @@ var (
 	ErrCreatingImageJob           = errors.New("error creating image job from yaml file")
 	ErrCheckingJobStatus          = errors.New("error checking job status")
 	ErrDeletingJob                = errors.New("error deleting job")
+	ErrCreatingConfigJob          = errors.New("error creating config job from yaml file")
+	ErrCreatingUnConfigJob        = errors.New("error creating unconfig job from yaml file")
 )
 
 // Event Constants for the PodVM Image Job
@@ -98,6 +120,15 @@ const (
 	PodVMImageJobRunning          = "PodVMImageJobRunning"
 	PodVMImageJobStatusUnknown    = "PodVMImageJobStatusUnknown"
 	PodVMImageUnsupportedProvider = "PodVMImageUnsupportedProvider"
+)
+
+// Event Constants for the Config Job
+const (
+	PodVMConfigJobCompleted        = "PodVMConfigJobCompleted"
+	PodVMConfigJobFailed           = "PodVMConfigJobFailed"
+	PodVMConfigJobRunning          = "PodVMConfigJobRunning"
+	PodVMConfigJobStatusUnknown    = "PodVMConfigJobStatusUnknown"
+	PodVMConfigUnsupportedProvider = "PodVMConfigUnsupportedProvider"
 )
 
 type ImageGenerator struct {
@@ -173,6 +204,91 @@ func ImageCreate(c client.Client) (int, error) {
 
 }
 
+// Creates and apply the configmaps, secrets and other pre-configurations required for OSC operator
+func Preconfig(c client.Client) (int, error) {
+	status, err := ig.preConfigJobRunner()
+	if err != nil {
+		igLogger.Info("error running pre-configuration job", "err", err)
+		return ConfigJobFailed, err
+	}
+
+	return status, nil
+}
+
+func (r *ImageGenerator) preConfigJobRunner() (int, error) {
+	igLogger.Info("preConfigJobRunner: Start")
+
+	// We create the job first irrespective of the image ID being set or not
+	// This helps to handle the job deletion if the image ID is already set and entering here on requeue
+
+	filename := "osc-podvm-pre-config-job.yaml"
+
+	job, err := r.createJobFromFile(filename)
+	if err != nil {
+		igLogger.Info("error creating the PreConfig creation job object from yaml file", "err", err)
+		return ConfigJobFailed, ErrCreatingConfigJob
+	}
+
+	// Handle job deletion if the image ID is already set and entering here on requeue
+	if r.isImageIDSet() || r.IsConfigsExist() {
+		igLogger.Info("Image ID is already set, skipping image creation")
+		// Delete the job if it still exists
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+
+		return PreConfiguredSuccessfully, nil
+	}
+
+	// Create the job
+	if err = r.createJob(job); err != nil {
+		igLogger.Info("error creating the pre-config creation job", "err", err)
+		return ConfigRequeueNeeded, ErrCreatingConfigJob
+	}
+
+	igLogger.Info("preConfigJobRunner: SAVITRI filename", "filename", filename, "job.Name", job.Name)
+	status, err := r.checkJobStatus(job.Name, job.Namespace)
+	if err != nil {
+		igLogger.Info("error checking job status", "err", err)
+		return PreConfigurationStatusUnknown, ErrCheckingJobStatus
+	}
+
+	// Handle different job statuses
+	switch status {
+	case ConfigJobRunning:
+		igLogger.Info("Image creation job is still running")
+		return ConfigRequeueNeeded, nil
+	case ConfigJobCompleted:
+		// If job completed successfully but image ID is not set, requeue
+		if !r.isImageIDSet() {
+			igLogger.Info("Image creation job has completed and image ID is not set, requeueing")
+			return ConfigRequeueNeeded, nil
+		}
+		// Delete the job as it's no longer needed
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+		igLogger.Info("Image creation job has completed successfully and image ID is set")
+		return PreConfiguredSuccessfully, nil
+	case ConfigJobFailed:
+		// If job failed, don't requeue
+		igLogger.Info("Pre Config job has failed")
+
+		// Delete the job as it's no longer needed
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+		return ConfigJobFailed, nil
+	default:
+		// Handle unknown job status
+		igLogger.Info("Unknown job status", "status", status)
+		return ConfigRequeueNeeded, nil
+	}
+}
+
 // ImageDelete deletes a podvm image for a cloud provider if present
 func ImageDelete(c client.Client) (int, error) {
 	if err := InitializeImageGenerator(c); err != nil {
@@ -199,6 +315,17 @@ func ImageDelete(c client.Client) (int, error) {
 
 	return status, nil
 
+}
+
+// Creates and apply the configmaps, secrets and other pre-configurations required for OSC operator
+func PostUnconfig(c client.Client) (int, error) {
+	status, err := ig.postUnconfigJobRunner()
+	if err != nil {
+		igLogger.Info("error running post configuration job", "err", err)
+		return PostUnconfigurationFailed, err
+	}
+
+	return status, nil
 }
 
 func newImageGenerator(client client.Client) (*ImageGenerator, error) {
@@ -558,6 +685,86 @@ func (r *ImageGenerator) imageDeleteJobRunner() (int, error) {
 	}
 }
 
+// Method to run image deletion job
+// Calling this method assumes the following already done by the caller:
+// peer-pods-cm and peer-pods-secret objects are valid
+// cloud provider specific podvm image config is present
+// azure-podvm-image-cm.yaml for Azure
+// aws-podvm-image-cm.yaml for AWS
+// libvirt-podvm-image-cm.yaml for Libvirt
+// Successful deletion removes the image ID from peer-pods-cm
+
+func (r *ImageGenerator) postUnconfigJobRunner() (int, error) {
+	igLogger.Info("postUnconfigJobRunner: Start")
+
+	// file format: osc-podvm-[create|delete]-job.yaml
+	filename := "osc-cleanup.yaml"
+
+	job, err := r.createJobFromFile(filename)
+	if err != nil {
+		igLogger.Info("error creating unconfig job from yaml file", "err", err)
+		return PostUnconfigurationFailed, ErrCreatingUnConfigJob
+	}
+
+	// Handle job deletion if the image ID is not set and entering here on requeue
+	if !r.IsConfigsExist() {
+		igLogger.Info("Image ID is not set, skipping image deletion")
+		// Delete the job if it still exists
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+
+		return PostUnconfiguredSuccessfully, nil
+	}
+
+	// Create the job
+	if err = r.createJob(job); err != nil {
+		igLogger.Info("error creating the image deletion job", "err", err)
+		return ConfigRequeueNeeded, ErrCreatingUnConfigJob
+	}
+
+	status, err := r.checkJobStatus(job.Name, job.Namespace)
+	if err != nil {
+		igLogger.Info("error checking job status", "err", err)
+		return PostUnconfigurationStatusUnknown, ErrCheckingJobStatus
+	}
+
+	// Handle different job statuses
+	switch status {
+	case ConfigJobRunning:
+		igLogger.Info("Unconfiguration of job is still running")
+		return ConfigRequeueNeeded, nil
+	case ConfigJobCompleted:
+		// If job completed successfully but image ID is still set, requeue
+		if r.isImageIDSet() {
+			igLogger.Info("Image deletion job has completed and image ID is still set, requeueing")
+			return ConfigRequeueNeeded, nil
+		}
+		// Delete the job as it's no longer needed
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+		igLogger.Info("Image deletion job has completed successfully and image ID is not set")
+		return PostUnconfiguredSuccessfully, nil
+	case ConfigJobFailed:
+		// If job failed, don't requeue
+		igLogger.Info("Image deletion job has failed")
+
+		// Delete the job as it's no longer needed
+		if err := r.deleteJob(job); err != nil {
+			igLogger.Info("Error deleting job", "err", err)
+			return ConfigRequeueNeeded, err
+		}
+		return PostUnconfigurationFailed, nil
+	default:
+		// Handle unknown job status
+		igLogger.Info("Unknown job status", "status", status)
+		return ConfigRequeueNeeded, nil
+	}
+}
+
 func (r *ImageGenerator) isImageIDSet() bool {
 	peerPodsCM, err := r.getPeerPodsCM()
 	if peerPodsCM == nil || err != nil {
@@ -822,36 +1029,62 @@ func (r *ImageGenerator) checkJobStatus(jobName, namespace string) (int, error) 
 
 	if r.hasJobFailed(job) {
 		action := "Check the logs for the job"
-		err = r.createJobEvent(namespace, jobName, PodVMImageJobFailed,
-			fmt.Sprintf("PodVM image job (%s) failed", jobName), corev1.EventTypeWarning, action)
-		if err != nil {
-			igLogger.Info("error creating event for failed Job", "job name", job.Name, "err", err)
+		if job.Name == preConfigJobName || job.Name == postUnconfigJobName {
+			err = r.createJobEvent(namespace, jobName, PodVMConfigJobFailed,
+				fmt.Sprintf("PodVM config job (%s) failed", jobName), corev1.EventTypeWarning, action)
+			if err != nil {
+				igLogger.Info("error creating event for failed Job", "job name", job.Name, "err", err)
+			}
+			return ConfigJobFailed, nil
+		} else {
+			err = r.createJobEvent(namespace, jobName, PodVMImageJobFailed,
+				fmt.Sprintf("PodVM image job (%s) failed", jobName), corev1.EventTypeWarning, action)
+			if err != nil {
+				igLogger.Info("error creating event for failed Job", "job name", job.Name, "err", err)
+			}
+			return ImageJobFailed, nil
 		}
-		return ImageJobFailed, nil
 	}
 
 	if r.hasJobCompleted(job) {
 		igLogger.Info("JobStatus: Job has completed successfully", "job name", job.Name)
 		action := "Check the pod vm image details in peer-pods-cm configmap"
-		err = r.createJobEvent(namespace, jobName, PodVMImageJobCompleted,
-			fmt.Sprintf("PodVM image job (%s) completed successfully", jobName), corev1.EventTypeNormal, action)
-		if err != nil {
-			igLogger.Info("error creating event for completed Job", "job name", job.Name, "err", err)
+		if job.Name == preConfigJobName || job.Name == postUnconfigJobName {
+			err = r.createJobEvent(namespace, jobName, PodVMConfigJobCompleted,
+				fmt.Sprintf("PodVM config job (%s) completed successfully", jobName), corev1.EventTypeWarning, action)
+			if err != nil {
+				igLogger.Info("error creating event for failed Job", "job name", job.Name, "err", err)
+			}
+			return ConfigJobCompleted, nil
+		} else {
+			err = r.createJobEvent(namespace, jobName, PodVMImageJobCompleted,
+				fmt.Sprintf("PodVM image job (%s) completed successfully", jobName), corev1.EventTypeNormal, action)
+			if err != nil {
+				igLogger.Info("error creating event for completed Job", "job name", job.Name, "err", err)
+			}
+			return ImageJobCompleted, nil
 		}
-		return ImageJobCompleted, nil
 	}
 
 	if r.isJobActive(job) {
 		igLogger.Info("JobStatus: Job is still running", "job name", job.Name)
 		action := "Check the logs for the job"
-		err = r.createJobEvent(namespace, jobName, PodVMImageJobRunning,
-			fmt.Sprintf("PodVM image job (%s) is running", jobName), corev1.EventTypeNormal, action)
-		if err != nil {
-			igLogger.Info("error creating event for running Job", "job name", job.Name, "err", err)
+		if job.Name == preConfigJobName || job.Name == postUnconfigJobName {
+			err = r.createJobEvent(namespace, jobName, PodVMConfigJobRunning,
+				fmt.Sprintf("PodVM config job (%s) is running", jobName), corev1.EventTypeWarning, action)
+			if err != nil {
+				igLogger.Info("error creating event for failed Job", "job name", job.Name, "err", err)
+			}
+			return ConfigJobRunning, nil
+		} else {
+			err = r.createJobEvent(namespace, jobName, PodVMImageJobRunning,
+				fmt.Sprintf("PodVM image job (%s) is running", jobName), corev1.EventTypeNormal, action)
+			if err != nil {
+				igLogger.Info("error creating event for running Job", "job name", job.Name, "err", err)
+			}
+			return ImageJobRunning, nil
 		}
-		return ImageJobRunning, nil
 	}
-
 	return CheckingJobStatusFailed, fmt.Errorf("job status check failed %s", jobName)
 }
 
@@ -878,4 +1111,36 @@ func (r *ImageGenerator) createJobEvent(namespace, jobName, reason, message, eve
 
 	return createKubernetesEvent(r.clientset, event, reason, metav1.CreateOptions{})
 
+}
+func (r *ImageGenerator) IsConfigsExist() bool {
+	igLogger.Info("SAVITRI: In IsConfigsExist")
+	if r.provider == LibvirtProvider {
+		ocpLibvirtSecret, err := getOCPLibvirtSecret(r.client)
+		if err != nil || ocpLibvirtSecret == nil {
+			return false
+		}
+
+		libvirtPodVMImageCM, err := getLibvirtPodVMImageCM(r.client)
+		if err != nil || libvirtPodVMImageCM == nil {
+			return false
+		}
+	} else {
+		return true
+	}
+	peerPodsCM, err := r.getPeerPodsCM()
+	if err != nil || peerPodsCM == nil {
+		return false
+	}
+
+	peerPodsSecret, err := getPeerPodsSecret(r.client)
+	if err != nil || peerPodsSecret == nil {
+		return false
+	}
+
+	sshKeySecret, err := getSshKeySecret(r.client)
+	if err != nil || sshKeySecret == nil {
+		return false
+	}
+
+	return true
 }

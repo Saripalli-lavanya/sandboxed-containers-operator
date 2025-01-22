@@ -39,13 +39,76 @@ function verify_vars() {
 
 # Function to create the libvirt image based on the type.
 function create_libvirt_image() {
+
+    if ! check_pool_and_volume_existence; then
+        create_pool_and_volume
+    fi
+    
     # Based on the value of `IMAGE_TYPE` the image is either build from scratch or using the prebuilt artifact.
     if [[ "${IMAGE_TYPE}" == "operator-built" ]]; then
         create_libvirt_image_from_scratch
     elif [[ "${IMAGE_TYPE}" == "pre-built" ]]; then
         create_libvirt_image_from_prebuilt_artifact
     fi
+}
 
+# Function to create Libvirt pool and configure libvirt volume to upload qcow2 image
+function create_pool_and_volume() {
+    KVM_HOST_ADDRESS=$(echo "${LIBVIRT_URI}" | sed -E 's|^.*//([^/]+).*$|\1|')
+
+    if [[ -z "$KVM_HOST_ADDRESS" ]]; then
+        echo "Failed to extract IP address from the URI."
+        exit 1
+    fi
+
+    ssh "$KVM_HOST_ADDRESS" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "/root/.ssh/id_rsa" "mkdir -p ${LIBVIRT_DIR_NAME}"
+    if [[ $? -eq 0 ]]; then
+        echo "Directory '$LIBVIRT_DIR_NAME' created successfully."
+    else
+        echo "Failed to create directory '$LIBVIRT_DIR_NAME' on '$KVM_HOST_ADDRESS'."
+        exit 1
+    fi
+
+    virsh -d 0 -c "${LIBVIRT_URI}" pool-info "${LIBVIRT_POOL}" > /dev/null 2>&1
+    if [ $? -eq 0 ]; then
+        echo "Pool '${LIBVIRT_POOL}' already exists."
+    else
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-define-as "${LIBVIRT_POOL}" --type dir --target "${LIBVIRT_DIR_NAME}" \
+            || error_exit "Failed to define libvirt pool '${LIBVIRT_POOL}'."
+
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-start "${LIBVIRT_POOL}" \
+            || error_exit "Failed to start libvirt pool '${LIBVIRT_POOL}'."
+    fi
+
+    virsh -d 0 -c "${LIBVIRT_URI}" vol-create-as --pool "${LIBVIRT_POOL}" \
+        --name "${LIBVIRT_VOL_NAME}" \
+        --capacity 20G \
+        --allocation 2G \
+        --prealloc-metadata \
+        --format qcow2 \
+        || error_exit "Failed to create libvirt volume '${LIBVIRT_VOL_NAME}' in pool '${LIBVIRT_POOL}'."
+
+    echo "Created libvirt pool and volume successfully."
+}
+
+# Function that checks if defined volume and pool are already present
+# Returns 0 if both pool and volume exist, 1 otherwise
+function check_pool_and_volume_existence() {
+    
+    echo "Checking existence of libvirt pool '${LIBVIRT_POOL}' and volume '${LIBVIRT_VOL_NAME}'..."
+
+    virsh -d 0 -c "${LIBVIRT_URI}" pool-info "${LIBVIRT_POOL}" >/dev/null 2>&1
+    POOL_EXISTS=$?
+    virsh -d 0 -c "${LIBVIRT_URI}" vol-info --pool "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}" >/dev/null 2>&1
+    VOL_EXISTS=$?
+
+    if [ "$POOL_EXISTS" -eq 0 ] && [ "$VOL_EXISTS" -eq 0 ]; then
+        echo "Disclaimer: A Libvirt pool named '${LIBVIRT_POOL}' with volume '${LIBVIRT_VOL_NAME}' already exists on the KVM host. Image will be uploaded to the same volume."
+        return 0
+    else
+        echo "Libvirt pool '${LIBVIRT_POOL}' or volume '${LIBVIRT_VOL_NAME}' does not exist. Proceeding to create..."
+        return 1
+    fi
 }
 
 # Function to create the libvirt image from a prebuilt artifact.
@@ -204,14 +267,31 @@ function delete_libvirt_image() {
     # LIBVIRT_POOL shouldn't be empty
     [[ -z "${LIBVIRT_POOL}" ]] && error_exit "LIBVIRT_POOL is empty"
 
-    # Delete the libvirt pool
-    echo "Deleting libvirt pool."
-    virsh -d 0 -c "${LIBVIRT_URI}" pool-destroy "${LIBVIRT_POOL}" ||
+    # Delete the libvirt volume
+    virsh -d 0 -c "${LIBVIRT_URI}" vol-delete --pool "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}" || 
+    error_exit "Failed to delete volume '${LIBVIRT_VOL_NAME}' from pool '${LIBVIRT_POOL}'"
+
+    echo "Volume '${LIBVIRT_VOL_NAME}' deleted successfully."
+
+    # Check remaining volumes in the pool
+    VOLUMES=$(virsh -d 0 -c "${LIBVIRT_URI}" vol-list "${LIBVIRT_POOL}" | awk 'NR>2 {print $1}' | grep -v "^$LIBVIRT_VOL_NAME\$")
+
+    #Deleting pool if there are other volumes in the pool
+    if [ -z "$VOLUMES" ]; then
+        echo "No other volumes found in the pool. Deleting the pool"
+
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-destroy "${LIBVIRT_POOL}" ||
         error_exit "Failed to destroy the libvirt pool"
 
-    virsh -d 0 -c "${LIBVIRT_URI}" pool-undefine "${LIBVIRT_POOL}" ||
+        echo "Pool '${LIBVIRT_POOL}' destroyed successfully."
+
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-undefine "${LIBVIRT_POOL}" ||
         error_exit "Failed to undefine the libvirt pool"
 
+        echo "Pool '${LIBVIRT_POOL}' undefined successfully."
+    else
+        echo "Other volumes are present in the pool. Pool will not be deleted."
+    fi    
     echo "Deleted libvirt image successfully"
 
     # Remove the libvirt_volume_name from peer-pods-cm configmap

@@ -57,16 +57,14 @@ function create_pool_and_volume() {
     KVM_HOST_ADDRESS=$(echo "${LIBVIRT_URI}" | sed -E 's|^.*//([^/]+).*$|\1|')
 
     if [[ -z "$KVM_HOST_ADDRESS" ]]; then
-        echo "Failed to extract IP address from the URI."
-        exit 1
+        error_exit "Failed to extract IP address from the URI."
     fi
 
     ssh "$KVM_HOST_ADDRESS" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "/root/.ssh/id_rsa" "mkdir -p ${LIBVIRT_DIR_NAME}"
     if [[ $? -eq 0 ]]; then
         echo "Directory '$LIBVIRT_DIR_NAME' created successfully."
     else
-        echo "Failed to create directory '$LIBVIRT_DIR_NAME' on '$KVM_HOST_ADDRESS'."
-        exit 1
+        error_exit "Failed to create directory '$LIBVIRT_DIR_NAME' on '$KVM_HOST_ADDRESS'."
     fi
 
     virsh -d 0 -c "${LIBVIRT_URI}" pool-info "${LIBVIRT_POOL}" > /dev/null 2>&1
@@ -78,6 +76,13 @@ function create_pool_and_volume() {
 
         virsh -d 0 -c "${LIBVIRT_URI}" pool-start "${LIBVIRT_POOL}" \
             || error_exit "Failed to start libvirt pool '${LIBVIRT_POOL}'."
+        if [[ $? -ne 0 ]]; then
+            echo "Failed to start libvirt pool '${LIBVIRT_POOL}'. Attempting to undefine the pool."
+            virsh -d 0 -c "${LIBVIRT_URI}" pool-undefine "${LIBVIRT_POOL}"
+            error_exit "Failed to start libvirt pool '${LIBVIRT_POOL}', pool has been undefine."
+        else
+            echo "Pool '${LIBVIRT_POOL}' started successfully."
+        fi
     fi
 
     virsh -d 0 -c "${LIBVIRT_URI}" vol-create-as --pool "${LIBVIRT_POOL}" \
@@ -94,6 +99,13 @@ function create_pool_and_volume() {
 # Function that checks if defined volume and pool are already present
 # Returns 0 if both pool and volume exist, 1 otherwise
 function check_pool_and_volume_existence() {
+
+    if [[ -z "${LIBVIRT_POOL}" || -z "${LIBVIRT_VOL_NAME}" ]]; then
+        echo "LIBVIRT_POOL or LIBVIRT_VOL_NAME values are not provided in the configmap. Skipping the existence check."
+        LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_${TIMESTAMP}"
+        LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_${TIMESTAMP}"
+        return 1
+    fi
     
     echo "Checking existence of libvirt pool '${LIBVIRT_POOL}' and volume '${LIBVIRT_VOL_NAME}'..."
 
@@ -247,11 +259,12 @@ function add_libvirt_vol_to_peer_pods_cm() {
             return
         fi
 
-        # Add the libvirt image id to peer-pods-cm configmap
-        echo "Updating peer-pods-cm configmap with LIBVIRT_IMAGE_ID=${LIBVIRT_VOL_NAME}"
+        echo "Updating peer-pods-cm configmap with LIBVIRT_IMAGE_ID=${LIBVIRT_VOL_NAME}, LIBVIRT_POOL=${LIBVIRT_POOL}, and LIBVIRT_VOL_NAME=${LIBVIRT_VOL_NAME}"
+        
         kubectl patch configmap peer-pods-cm -n openshift-sandboxed-containers-operator \
-            --type merge -p "{\"data\":{\"LIBVIRT_IMAGE_ID\":\"${LIBVIRT_VOL_NAME}\"}}" ||
-            error_exit "Failed to add the libvirt image id to peer-pods-cm configmap"
+            --type merge -p "{\"data\":{\"LIBVIRT_IMAGE_ID\":\"${LIBVIRT_VOL_NAME}\", \"LIBVIRT_POOL\":\"${LIBVIRT_POOL}\", \"LIBVIRT_VOL_NAME\":\"${LIBVIRT_VOL_NAME}\"}}" ||
+            error_exit "Failed to add the libvirt image id, pool, and volume name to peer-pods-cm configmap"
+
     fi
 }
 

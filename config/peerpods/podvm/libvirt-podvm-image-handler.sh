@@ -282,18 +282,20 @@ function delete_libvirt_image() {
     # LIBVIRT_POOL shouldn't be empty
     [[ -z "${LIBVIRT_POOL}" ]] && error_exit "LIBVIRT_POOL is empty"
 
-    # Delete the libvirt volume
-    virsh -d 0 -c "${LIBVIRT_URI}" vol-delete --pool "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}" || 
-    error_exit "Failed to delete volume '${LIBVIRT_VOL_NAME}' from pool '${LIBVIRT_POOL}'"
-
-    echo "Volume '${LIBVIRT_VOL_NAME}' deleted successfully."
+    # Attempt to delete the libvirt volume
+    virsh -d 0 -c "${LIBVIRT_URI}" vol-delete --pool "${LIBVIRT_POOL}" "${LIBVIRT_VOL_NAME}" 
+    if [ $? -eq 0 ]; then
+        echo "Volume '${LIBVIRT_VOL_NAME}' deleted successfully."
+    else
+        echo "Failed to delete volume '${LIBVIRT_VOL_NAME}' from pool '${LIBVIRT_POOL}', continuing to check remaining volumes."
+    fi
 
     # Check remaining volumes in the pool
-    VOLUMES=$(virsh -d 0 -c "${LIBVIRT_URI}" vol-list "${LIBVIRT_POOL}" | awk 'NR>2 {print $1}' | grep -v "^$LIBVIRT_VOL_NAME\$")
+    VOLUMES=$(virsh -d 0 -c "${LIBVIRT_URI}" vol-list "${LIBVIRT_POOL}" | awk 'NR>2 {print $1}')
 
     #Deleting pool if there are other volumes in the pool
-    if [ -z "$VOLUMES" ]; then
-        echo "No other volumes found in the pool. Deleting the pool"
+    if [ "$VOLUMES" == "$LIBVIRT_VOL_NAME" ]; then
+        echo "No other volumes found in the pool except '${LIBVIRT_VOL_NAME}'. Deleting the pool."
 
         virsh -d 0 -c "${LIBVIRT_URI}" pool-destroy "${LIBVIRT_POOL}" ||
         error_exit "Failed to destroy the libvirt pool"
@@ -307,6 +309,7 @@ function delete_libvirt_image() {
     else
         echo "Other volumes are present in the pool. Pool will not be deleted."
     fi    
+
     echo "Deleted libvirt image successfully"
 
     # Remove the libvirt_volume_name from peer-pods-cm configmap

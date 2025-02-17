@@ -104,6 +104,8 @@ function check_pool_and_volume_existence() {
         echo "LIBVIRT_POOL or LIBVIRT_VOL_NAME values are not provided in the configmap. Skipping the existence check."
         LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_$(date +'%Y%m%d%S')"
         LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_$(date +'%Y%m%d%S')"
+        LIBVIRT_DIR_NAME="/var/lib/libvirt/images/${CLOUD_PROVIDER}_$(date +'%Y%m%d%S')"
+        echo "Proceeding with defaults LIBVIRT_POOL as $LIBVIRT_POOL, LIBVIRT_VOL_NAME as $LIBVIRT_VOL_NAME"
         return 1
     fi
     

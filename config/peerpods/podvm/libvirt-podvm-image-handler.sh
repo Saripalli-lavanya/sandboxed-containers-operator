@@ -100,11 +100,11 @@ function create_pool_and_volume() {
 # Returns 0 if both pool and volume exist, 1 otherwise
 function check_pool_and_volume_existence() {
 
-    if [[ -z "${LIBVIRT_POOL}" || -z "${LIBVIRT_VOL_NAME}" ]]; then
+    if [[ -z "${LIBVIRT_POOL}" || -z "${LIBVIRT_VOL_NAME}" || -z "${LIBVIRT_DIR_NAME}" ]]; then
         echo "LIBVIRT_POOL or LIBVIRT_VOL_NAME values are not provided in the configmap. Skipping the existence check."
-        LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_$(date +'%Y%m%d%S')"
-        LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_$(date +'%Y%m%d%S')"
-        LIBVIRT_DIR_NAME="/var/lib/libvirt/images/${CLOUD_PROVIDER}_$(date +'%Y%m%d%S')"
+        [ -z "$LIBVIRT_POOL" ] && LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_$(date +'%Y%m%d%S')"
+        [ -z "$LIBVIRT_VOL_NAME" ] && LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_$(date +'%Y%m%d%S')"
+        [ -z "$LIBVIRT_DIR_NAME" ] && LIBVIRT_DIR_NAME="/var/lib/libvirt/images/${CLOUD_PROVIDER}_$(date +'%Y%m%d%S')"
         echo "Proceeding with defaults LIBVIRT_POOL as $LIBVIRT_POOL, LIBVIRT_VOL_NAME as $LIBVIRT_VOL_NAME"
         return 1
     fi

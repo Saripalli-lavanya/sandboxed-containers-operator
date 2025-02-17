@@ -297,15 +297,11 @@ function delete_libvirt_image() {
     if [ "$VOLUMES" == "$LIBVIRT_VOL_NAME" ]; then
         echo "No other volumes found in the pool except '${LIBVIRT_VOL_NAME}'. Deleting the pool."
 
-        virsh -d 0 -c "${LIBVIRT_URI}" pool-destroy "${LIBVIRT_POOL}" ||
-        error_exit "Failed to destroy the libvirt pool"
-
-        echo "Pool '${LIBVIRT_POOL}' destroyed successfully."
-
-        virsh -d 0 -c "${LIBVIRT_URI}" pool-undefine "${LIBVIRT_POOL}" ||
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-destroy "${LIBVIRT_POOL}" && \
+        virsh -d 0 -c "${LIBVIRT_URI}" pool-undefine "${LIBVIRT_POOL}" || \
         error_exit "Failed to undefine the libvirt pool"
 
-        echo "Pool '${LIBVIRT_POOL}' undefined successfully."
+        echo "Pool '${LIBVIRT_POOL}' destroyed successfully."
     else
         echo "Other volumes are present in the pool. Pool will not be deleted."
     fi    

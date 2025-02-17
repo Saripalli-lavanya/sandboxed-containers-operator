@@ -102,8 +102,8 @@ function check_pool_and_volume_existence() {
 
     if [[ -z "${LIBVIRT_POOL}" || -z "${LIBVIRT_VOL_NAME}" ]]; then
         echo "LIBVIRT_POOL or LIBVIRT_VOL_NAME values are not provided in the configmap. Skipping the existence check."
-        LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_${TIMESTAMP}"
-        LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_${TIMESTAMP}"
+        LIBVIRT_POOL="${CLOUD_PROVIDER}_pool_$(date +'%Y%m%d%S')"
+        LIBVIRT_VOL_NAME="${CLOUD_PROVIDER}_vol_$(date +'%Y%m%d%S')"
         return 1
     fi
     
